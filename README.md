@@ -1,43 +1,28 @@
-CSV Comparison Tool
-Overview
-This tool compares two sets of CSV files from AWS S3 buckets, identifies discrepancies in the data, and generates a comprehensive HTML report summarizing the comparison results. The comparison includes checking for:
+# CSV Comparison Tool
 
-Missing columns in either file
+## 🚀 Overview
+This tool compares two sets of CSV files stored in AWS S3 buckets. It:
 
-Missing rows or extra rows in either file
+- Downloads `.zip` files containing CSVs from two different S3 prefixes
+- Extracts and reads the CSVs
+- Compares CSV files based on defined primary key columns and selected fields
+- Generates a clean, human-readable HTML report with discrepancies, stats, and insights
 
-Duplicate rows
+## 🛠️ Prerequisites
 
-Field-level discrepancies
+Make sure Python 3.6+ is installed. Then install dependencies:
 
-The comparison process is optimized with multithreading for faster execution.
-
-Prerequisites
-Before running the tool, ensure you have the following installed:
-
-Python 3.6+
-
-boto3 (for AWS S3 integration)
-
-pandas (for CSV data manipulation)
-
-tqdm (for progress bars)
-
-configparser (for configuration management)
-
-To install the necessary dependencies, run:
-
-bash
-Copy
-Edit
+```bash
 pip install boto3 pandas tqdm
-Configuration
-The tool reads configuration settings from a config.ini file. Here’s an example configuration:
+```
 
-Example config.ini
-ini
-Copy
-Edit
+## ⚙️ Configuration
+
+Create a `config.ini` file in the same directory as `run.py`.
+
+### Example `config.ini`
+
+```ini
 [settings]
 project_name = CSV Comparator
 project_logo = path/to/logo.png
@@ -62,94 +47,62 @@ use_multithreading_comparision = true
 [report_custom]
 include_passed = true
 include_missing_files = true
-Ensure to modify the paths and AWS configuration to match your setup.
+```
 
-Explanation of config.ini fields:
-[settings]
+### 🔍 Key Config Details
 
-project_name: Name of the project for the report.
+- `primary_key_columns`: Used to uniquely identify rows for comparison.
+- `columns`: List of columns to compare. Leave blank to compare all.
+- `use_multithreading_*`: Use threads to boost performance.
+- `output_file`: Auto-appends a timestamp to prevent overwriting.
 
-project_logo: Path to the logo image for the report.
+## ▶️ How to Run
 
-[report]
+Run the comparison by executing the following:
 
-output_dir: Directory where the generated report will be saved.
-
-output_file: Name of the output report file.
-
-[keys]
-
-primary_key_columns: A comma-separated list of columns that serve as the primary key for comparison.
-
-columns: A comma-separated list of columns to compare. If None, all columns will be compared.
-
-[aws]
-
-bucket_name: The name of your AWS S3 bucket.
-
-source_1_prefix & source_2_prefix: Prefixes for the two sources of CSV files in the S3 bucket.
-
-[threading]
-
-use_multithreading_reading: Enable multithreading for reading files from S3.
-
-use_multithreading_comparision: Enable multithreading for comparing CSV files.
-
-[report_custom]
-
-include_passed: Include passed comparisons in the report.
-
-include_missing_files: Include missing files in the report.
-
-Running the Tool
-To start the comparison process, run the run.py script. This script will:
-
-Download CSV files from two S3 sources.
-
-Compare the CSVs based on primary keys and selected columns.
-
-Generate a detailed HTML report summarizing the differences.
-
-Run the script by executing the following command:
-
-bash
-Copy
-Edit
+```bash
 python run.py
-Expected Output
-The tool will output a report file (e.g., comparison_report.html) in the directory specified under output_dir.
+```
 
-The report will include:
+This script will:
+1. Download and unzip files from both sources in S3
+2. Normalize filenames (removes timestamps)
+3. Match files by name
+4. Compare matched CSVs row-by-row and field-by-field
+5. Generate a full HTML report
 
-A summary of the comparison results.
+## 📂 Output
 
-Detailed discrepancies, such as missing rows, extra rows, duplicate rows, and field-level mismatches.
+- HTML report is saved to the `output_dir` with timestamped filename
+- Includes:
+  - Summary stats per file
+  - Missing or extra rows
+  - Column-level mismatches
+  - Pass/Fail percentages
+  - Missing files between sources (optional)
 
-An overall pass/fail percentage for the comparison.
+## ✅ Example Output Log
 
-Example Output
-sql
-Copy
-Edit
+```
 ---------------- CSV Comparison Started ----------------
-Reading zip files from source1: 5 files processed
-Reading zip files from source2: 5 files processed
-Comparing CSV files: 4 files compared
+Reading zip files from source1...
+Reading zip files from source2...
+Comparing 3 matched CSV files...
 Generating report...
 ---------------- CSV Comparison Finished ----------------
-Customizing the Comparison
-You can modify the columns to compare by editing the columns setting in the config.ini file.
+```
 
-You can change the primary key columns by modifying the primary_key_columns setting.
+## 🧩 Troubleshooting
 
-Troubleshooting
-If you encounter any issues, check the following:
+- **AWS Access**: Make sure you’ve configured credentials with `aws configure` or via `~/.aws/credentials`.
+- **File Matching**: Ensure files in both prefixes have consistent names (except for timestamps).
+- **Config Errors**: Double-check your `config.ini` values if anything breaks.
 
-AWS credentials: Ensure that your AWS credentials are correctly configured (e.g., using aws configure).
+## 📄 License
 
-Bucket access: Make sure the specified S3 bucket and files are accessible.
+This project is open for internal or personal use. Modify and adapt as needed.
+```
 
-For detailed logs, you can add additional logging in the run.py file.
+---
 
-License
-This tool is provided as-is. Feel free to modify and extend it according to your needs.
+Let me know if you’d also like a starter `run.py` included in the repo layout!
