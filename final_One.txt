@@ -6,10 +6,11 @@ import gc
 import logging
 from datetime import datetime
 from functools import lru_cache
-from multiprocessing import Pool, Manager, Lock
-from threading import Lock as ThreadLock, Thread
+from multiprocessing import Pool, Manager
+from threading import Lock as ThreadLock
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import time
+import psutil
 
 import boto3
 import pandas as pd
@@ -20,6 +21,10 @@ import io
 from tqdm import tqdm
 from tqdm.contrib.concurrent import thread_map
 from jinja2 import Template
+
+# Global lock for thread-safe operations
+tqdm_lock = ThreadLock()
+print_lock = ThreadLock()
 
 '''-------------------------------------------------------------
 Setup Logging
@@ -40,7 +45,6 @@ Configuration and Constants
 -------------------------------------------------------------'''
 pd.set_option('mode.chained_assignment', None)
 
-# Reading config files
 config = configparser.ConfigParser()
 try:
     config.read('config.ini')
@@ -60,8 +64,8 @@ download_local = config.getboolean('download', 'download_local', fallback=False)
 # [keys]
 csv_primary_keys = config.get('keys', 'primary_key_columns', fallback='')
 csv_columns = config.get('keys', 'columns', fallback='')
-csv_primary_keys = [col.strip() for col in csv_primary_keys.split(',')] if csv_primary_keys else []
-csv_columns = [col.strip() for col in csv_columns.split(',')] if csv_columns else None
+csv_primary_keys = [col.strip() for col in csv_primary_keys.split(',') if col.strip()] or []
+csv_columns = [col.strip() for col in csv_columns.split(',') if col.strip()] or None
 
 # [aws]
 bucket_name = config.get('aws', 'bucket_name', fallback='')
@@ -70,9 +74,11 @@ source_2_prefix = config.get('aws', 'source_2_prefix', fallback='')
 
 # [threading]
 use_multithreading_reading = config.getboolean('threading', 'use_multithreading_reading', fallback=True)
-use_multithreading_comparision = config.getboolean('threading', 'use_multithreading_comparision', fallback=True)
-num_processes = config.getint('threading', 'num_processes', fallback=os.cpu_count() or 4)
+use_multithreading_comparison = config.getboolean('threading', 'use_multithreading_comparision', fallback=True)
+num_processes = config.getint('threading', 'num_processes', fallback=max(1, os.cpu_count() or 4))
 comparison_batch_size = config.getint('threading', 'comparison_batch_size', fallback=50)
+num_chunks = config.getint('threading', 'num_chunks', fallback=3)
+show_row_progress = config.getboolean('threading', 'show_row_progress', fallback=True)
 
 # [report_custom]
 include_passed = config.getboolean('report_custom', 'include_passed', fallback=True)
@@ -81,13 +87,13 @@ include_extra_files = config.getboolean('report_custom', 'include_extra_files', 
 
 # [global_col]
 global_percentage = config.get('global_col', 'global_percentage', fallback='')
-global_percentage = [col.strip() for col in global_percentage.split(',')] if global_percentage else []
+global_percentage = [col.strip() for col in global_percentage.split(',') if col.strip()] or []
 
 '''-------------------------------------------------------------
 Utility Functions
 -------------------------------------------------------------'''
 def normalize_value(val):
-    if pd.isna(val) or val is None or val == np.nan:
+    if pd.isna(val) or val is None:
         return np.nan
     if isinstance(val, (int, float)):
         return float(val)
@@ -104,20 +110,20 @@ def normalize_value(val):
 def values_equal(val1, val2):
     val1 = normalize_value(val1)
     val2 = normalize_value(val2)
-    if pd.isna(val1) and pd.isna(val2):
-        return True
-    if pd.isna(val1) or pd.isna(val2):
-        return False
-    return val1 == val2
+    return pd.isna(val1) and pd.isna(val2) or val1 == val2
 
 def normalize_filename(filename):
     return re.sub(r'\d{8}_\d{4}', '', os.path.basename(filename))
 
-print_lock = ThreadLock()
-
 def thread_safe_print(*args, **kwargs):
     with print_lock:
         logging.info(*args, **kwargs)
+
+def log_resource_usage():
+    process = psutil.Process()
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    memory_info = process.memory_info()
+    logging.info(f"Resource Usage: CPU {cpu_percent}% | Memory {memory_info.rss / 1024**2:.2f} MB | PID {os.getpid()}")
 
 '''-------------------------------------------------------------
 S3 and File Handling Functions
@@ -145,45 +151,39 @@ def list_zip_files(prefix, download_local):
             thread_safe_print(f"❌ {type(e).__name__}: {e}")
             logging.error(f"Error listing local ZIP files: {e}")
             return []
-    else:
-        try:
-            response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-            zip_files = [item['Key'] for item in response.get('Contents', []) if item['Key'].endswith('.zip')]
-            logging.info(f"Found {len(zip_files)} ZIP files in S3 bucket {bucket_name}/{prefix}")
-            return zip_files
-        except Exception as e:
-            thread_safe_print(f"❌ {type(e).__name__}: {e}")
-            logging.error(f"Error listing S3 ZIP files: {e}")
-            return []
+    try:
+        response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+        zip_files = [item['Key'] for item in response.get('Contents', []) if item['Key'].endswith('.zip')]
+        logging.info(f"Found {len(zip_files)} ZIP files in S3 bucket {bucket_name}/{prefix}")
+        return zip_files
+    except Exception as e:
+        thread_safe_print(f"❌ {type(e).__name__}: {e}")
+        logging.error(f"Error listing S3 ZIP files: {e}")
+        return []
 
 def list_csvs_in_zip(zip_key, download_local):
-    csv_files = []
     try:
         if download_local:
             with zipfile.ZipFile(zip_key, 'r') as z:
-                csv_files = [f for f in z.namelist() if f.endswith('.csv')]
-        else:
-            zip_obj = s3.get_object(Bucket=bucket_name, Key=zip_key)
-            zip_data = zipfile.ZipFile(io.BytesIO(zip_obj['Body'].read()))
-            csv_files = [f for f in zip_data.namelist() if f.endswith('.csv')]
-        logging.info(f"Found {len(csv_files)} CSVs in {zip_key}")
+                return [f for f in z.namelist() if f.endswith('.csv')]
+        zip_obj = s3.get_object(Bucket=bucket_name, Key=zip_key)
+        zip_data = zipfile.ZipFile(io.BytesIO(zip_obj['Body'].read()))
+        return [f for f in zip_data.namelist() if f.endswith('.csv')]
     except Exception as e:
         thread_safe_print(f"❌ Error listing CSVs in {zip_key}: {e}")
         logging.error(f"Error listing CSVs in {zip_key}: {e}")
-    return csv_files
+        return []
 
 def read_csv_from_zip(zip_key, csv_filename, download_local, chunksize=10000):
     try:
         if download_local:
             with zipfile.ZipFile(zip_key, 'r') as z:
                 with z.open(csv_filename) as f:
-                    return pd.concat(pd.read_csv(f, low_memory=False, chunksize=chunksize))
-        else:
-            zip_obj = s3.get_object(Bucket=bucket_name, Key=zip_key)
-            zip_data = zipfile.ZipFile(io.BytesIO(zip_obj['Body'].read()))
-            with zip_data.open(csv_filename) as f:
-                return pd.concat(pd.read_csv(f, low_memory=False, chunksize=chunksize))
-            
+                    return pd.concat([chunk for chunk in pd.read_csv(f, low_memory=False, chunksize=chunksize)])
+        zip_obj = s3.get_object(Bucket=bucket_name, Key=zip_key)
+        zip_data = zipfile.ZipFile(io.BytesIO(zip_obj['Body'].read()))
+        with zip_data.open(csv_filename) as f:
+            return pd.concat([chunk for chunk in pd.read_csv(f, low_memory=False, chunksize=chunksize)])
     except Exception as e:
         thread_safe_print(f"❌ Error reading CSV {csv_filename} from {zip_key}: {e}")
         logging.error(f"Error reading CSV {csv_filename} from {zip_key}: {e}")
@@ -195,9 +195,7 @@ def read_csv_chunk(zip_csv_pairs, source_name, download_local, use_multithreadin
 
     zip_to_csvs = {}
     for zip_key, csv_name in zip_csv_pairs:
-        if zip_key not in zip_to_csvs:
-            zip_to_csvs[zip_key] = []
-        zip_to_csvs[zip_key].append(csv_name)
+        zip_to_csvs.setdefault(zip_key, []).append(csv_name)
 
     def read_zip_and_store(zip_key, csv_filenames):
         try:
@@ -221,22 +219,17 @@ def read_csv_chunk(zip_csv_pairs, source_name, download_local, use_multithreadin
             logging.error(f"Failed to read {zip_key}: {e}")
 
     if use_multithreading:
-        thread_map(
-            lambda x: read_zip_and_store(x[0], x[1]),
-            zip_to_csvs.items(),
-            total=len(zip_to_csvs),
-            desc=f"Reading CSVs from {source_name}",
-            unit="zip",
-            max_workers=8,
-            file=sys.stdout,
-            dynamic_ncols=True
-        )
+        with tqdm(total=len(zip_to_csvs), desc=f"Reading CSVs from {source_name}", unit="zip", dynamic_ncols=True):
+            thread_map(
+                lambda x: read_zip_and_store(x[0], x[1]),
+                zip_to_csvs.items(),
+                max_workers=8
+            )
     else:
         for zip_key, csv_filenames in tqdm(
             zip_to_csvs.items(),
             desc=f"Reading CSVs from {source_name}",
             unit="zip",
-            file=sys.stdout,
             dynamic_ncols=True
         ):
             read_zip_and_store(zip_key, csv_filenames)
@@ -249,7 +242,6 @@ def read_all_csvs_by_source(zip_keys, source_name, download_local):
         csvs = list_csvs_in_zip(zip_key, download_local)
         if csvs:
             zip_to_csvs[zip_key] = csvs
-
     total_csvs = sum(len(csvs) for csvs in zip_to_csvs.values())
     logging.info(f"Total CSVs found in {source_name}: {total_csvs}")
     if total_csvs == 0:
@@ -259,7 +251,7 @@ def read_all_csvs_by_source(zip_keys, source_name, download_local):
 '''-------------------------------------------------------------
 Comparison Functions
 -------------------------------------------------------------'''
-def compare_csvs(df1, df2, file_name):
+def compare_csvs(df1, df2, file_name, num_chunks=3):
     summary = {
         'Missing Columns in Neoprice': [],
         'Missing Columns in Engine': [],
@@ -289,7 +281,7 @@ def compare_csvs(df1, df2, file_name):
     summary['Missing Columns in Neoprice'] = list(set(df1.columns) - set(df2.columns))
     summary['Missing Columns in Engine'] = list(set(df2.columns) - set(df1.columns))
 
-    common_columns = list(set(df1.columns).intersection(set(df2.columns)))
+    common_columns = list(set(df1.columns).intersection(df2.columns))
     if not common_columns:
         logging.info(f"No common columns to compare in {file_name}")
         return pd.DataFrame(), summary
@@ -383,14 +375,18 @@ def compare_csvs(df1, df2, file_name):
     mismatches = 0
     discrepant_rows = set()
 
-    for idx in tqdm(common_idx, desc=f"Comparing rows ({file_name})", unit="rows", dynamic_ncols=True, leave=True):
-        if isinstance(df1.index, pd.MultiIndex):
-            row1 = df1.loc[tuple(idx)] if isinstance(idx, (list, tuple)) else df1.loc[idx]
-            row2 = df2.loc[tuple(idx)] if isinstance(idx, (list, tuple)) else df2.loc[idx]
-        else:
-            row1 = df1.loc[idx]
-            row2 = df2.loc[idx]
+    iterator = tqdm(
+        common_idx,
+        desc=f"Comparing rows ({file_name})",
+        unit="rows",
+        dynamic_ncols=True,
+        leave=False,
+        position=num_chunks
+    ) if show_row_progress else common_idx
 
+    for idx in iterator:
+        row1 = df1.loc[idx]
+        row2 = df2.loc[idx]
         row1_number = int(row1['_original_row'])
         row2_number = int(row2['_original_row'])
 
@@ -441,11 +437,8 @@ def compare_csvs(df1, df2, file_name):
     summary['Number of Discrepancies'] = total_discrepancies
 
     total_data_points = len(df1) + len(df2) + total_discrepancies
-
     if total_data_points > 0:
         failure_percent = (total_discrepancies / total_data_points) * 100
-        if failure_percent == 0 and total_discrepancies > 0:
-            failure_percent = 0.000001
         summary['Failure %'] = round(failure_percent, 6)
         summary['Pass %'] = round(100 - summary['Failure %'], 6)
     else:
@@ -468,11 +461,10 @@ def compare_csvs(df1, df2, file_name):
         summary['Status'] = 'PASS'
         summary['Note'] = '✅ No comparison issues, files are identical'
 
-    diff_df = pd.DataFrame(diff_summary)
-    return diff_df, summary
+    return pd.DataFrame(diff_summary), summary
 
 def process_csv_pair(args):
-    normalized_csv_name, source1_csv_map, source2_csv_map, progress_dict, chunk_id = args
+    normalized_csv_name, source1_csv_map, source2_csv_map, progress_dict, chunk_id, num_chunks = args
     start_time = datetime.now()
     pid = os.getpid()
     logging.info(f"Starting {normalized_csv_name} in process {pid} at {start_time}")
@@ -493,7 +485,7 @@ def process_csv_pair(args):
             return normalized_csv_name, pd.DataFrame(), {'Status': 'ERROR', 'Note': 'Failed to read CSV'}, chunk_id
 
         compare_start = datetime.now()
-        diff_df, summary = compare_csvs(df1, df2, normalized_csv_name)
+        diff_df, summary = compare_csvs(df1, df2, normalized_csv_name, num_chunks)
         compare_time = datetime.now() - compare_start
 
         del df1, df2
@@ -503,7 +495,6 @@ def process_csv_pair(args):
         logging.info(f"Finished {normalized_csv_name} in process {pid} at {end_time}, "
                      f"read={read_time}, compare={compare_time}, total={end_time - start_time}")
 
-        # Update progress for this chunk
         with progress_dict[chunk_id]['lock']:
             progress_dict[chunk_id]['completed'] += 1
             progress_dict[chunk_id]['total_time'] += (end_time - start_time).total_seconds()
@@ -516,251 +507,19 @@ def process_csv_pair(args):
             progress_dict[chunk_id]['completed'] += 1
         return normalized_csv_name, pd.DataFrame(), {'Status': 'ERROR', 'Note': str(e)}, chunk_id
 
-# def process_chunk(chunk_id, chunk_csvs, source1_csv_map, source2_csv_map, progress_dict, max_workers):
-#     process_args = [
-#         (csv_name, source1_csv_map, source2_csv_map, progress_dict, chunk_id)
-#         for csv_name in chunk_csvs
-#     ]
-#     results = []
-#     chunk_start_time = datetime.now()
-#     with Pool(processes=max_workers) as pool:
-#         results = list(tqdm(
-#             pool.imap_unordered(process_csv_pair, process_args),
-#             total=len(chunk_csvs),
-#             desc=f"Chunk {chunk_id + 1}",
-#             unit="csv",
-#             position=chunk_id,
-#             file=sys.stdout,
-#             dynamic_ncols=True,
-#             leave=True
-#         ))
-#     chunk_end_time = datetime.now()
-#     with progress_dict[chunk_id]['lock']:
-#         progress_dict[chunk_id]['completed'] += len(chunk_csvs)
-#         progress_dict[chunk_id]['total_time'] += (chunk_end_time - chunk_start_time).total_seconds()
-#     return results
-
-# def compare_all_csvs(source1_zip_to_csvs, source2_zip_to_csvs, use_multithreading=True, chunk_size=None):
-#     if not source1_zip_to_csvs or not source2_zip_to_csvs:
-#         logging.error("One or both ZIP-to-CSV mappings are empty")
-#         return pd.DataFrame(), {'Status': 'ERROR', 'Note': 'No CSVs available for comparison'}
-
-#     source1_csv_map = {}
-#     source2_csv_map = {}
-    
-#     for zip_key, csvs in source1_zip_to_csvs.items():
-#         for csv_name in csvs:
-#             normalized_name = normalize_filename(csv_name)
-#             source1_csv_map[normalized_name] = (zip_key, csv_name)
-    
-#     for zip_key, csvs in source2_zip_to_csvs.items():
-#         for csv_name in csvs:
-#             normalized_name = normalize_filename(csv_name)
-#             source2_csv_map[normalized_name] = (zip_key, csv_name)
-
-#     common_csvs = list(set(source1_csv_map) & set(source2_csv_map))
-#     missing_in_source2 = set(source1_csv_map) - set(source2_csv_map)
-#     missing_in_source1 = set(source2_csv_map) - set(source1_csv_map)
-
-#     if not common_csvs:
-#         logging.warning("No common CSVs found for comparison")
-#         all_summaries = {}
-#         if missing_in_source2 and include_missing_files:
-#             all_summaries["Missing in Source2"] = list(missing_in_source2)
-#         if missing_in_source1 and include_extra_files:
-#             all_summaries["Extra in Source2"] = list(missing_in_source1)
-#         return pd.DataFrame(), all_summaries
-
-#     all_diffs = []
-#     all_summaries = {}
-#     global_metrics = {col: {'Matches': 0, 'Mismatches': 0, 'Total': 0} for col in global_percentage}
-
-#     # Calculate effective number of processes and chunk size
-#     effective_processes = min(num_processes, len(common_csvs), 3)  # Cap at 3 chunks
-#     chunk_size = chunk_size or max(1, len(common_csvs) // effective_processes)
-#     num_chunks = min(3, max(1, (len(common_csvs) + chunk_size - 1) // chunk_size))  # Ensure at most 3 chunks
-#     chunks = []
-#     csvs_per_chunk = (len(common_csvs) + num_chunks - 1) // num_chunks
-#     for i in range(0, len(common_csvs), csvs_per_chunk):
-#         chunks.append(common_csvs[i:i + csvs_per_chunk])
-#     chunks = chunks[:num_chunks]  # Ensure exactly num_chunks
-#     logging.info(f"Using {effective_processes} processes with {num_chunks} chunks for {len(common_csvs)} CSVs")
-
-#     # Calculate workers per chunk
-#     workers_per_chunk = max(1, num_processes // num_chunks) if num_chunks > 0 else 1
-
-#     # Initialize manager for shared progress tracking
-#     manager = Manager()
-#     progress_dict = manager.dict()
-#     for i in range(num_chunks):
-#         progress_dict[i] = manager.dict(completed=0, total=len(chunks[i]), total_time=0.0, lock=manager.Lock())
-
-#     try:
-#         if use_multithreading:
-#             # Process chunks in parallel using ProcessPoolExecutor
-#             with ProcessPoolExecutor(max_workers=num_chunks) as executor:
-#                 futures = [
-#                     executor.submit(
-#                         process_chunk,
-#                         chunk_id,
-#                         chunk_csvs,
-#                         source1_csv_map,
-#                         source2_csv_map,
-#                         progress_dict,
-#                         workers_per_chunk
-#                     )
-#                     for chunk_id, chunk_csvs in enumerate(chunks)
-#                 ]
-
-#                 # Collect results as they complete
-#                 all_results = []
-#                 for future in as_completed(futures):
-#                     results = future.result()
-#                     all_results.extend(results)
-
-#         else:
-#             # Sequential processing for debugging or low-resource environments
-#             all_results = []
-#             for chunk_id, chunk_csvs in enumerate(chunks):
-#                 results = process_chunk(
-#                     chunk_id,
-#                     chunk_csvs,
-#                     source1_csv_map,
-#                     source2_csv_map,
-#                     progress_dict,
-#                     workers_per_chunk
-#                 )
-#                 all_results.extend(results)
-
-#         # Process results
-#         for csv_name, diff_df, summary, chunk_id in all_results:
-#             if diff_df.empty:
-#                 summary['Note'] = '✅ No differences'
-#             else:
-#                 diff_df['File'] = csv_name
-#                 all_diffs.append(diff_df)
-#             all_summaries[csv_name] = summary
-
-#             if 'Global Percentage Metrics' in summary:
-#                 for col in global_percentage:
-#                     if col in summary['Global Percentage Metrics']:
-#                         global_metrics[col]['Matches'] += summary['Global Percentage Metrics'][col]['Matches']
-#                         global_metrics[col]['Mismatches'] += summary['Global Percentage Metrics'][col]['Mismatches']
-#                         global_metrics[col]['Total'] += summary['Global Percentage Metrics'][col]['Total']
-
-#             del diff_df, summary
-#             gc.collect()
-
-#         # Calculate global percentages
-#         global_percentages = {}
-#         for col in global_percentage:
-#             total = global_metrics[col]['Total']
-#             matches = global_metrics[col]['Matches']
-#             mismatches = global_metrics[col]['Mismatches']
-#             if total > 0:
-#                 pass_percentage = (matches / total) * 100
-#                 global_percentages[col] = {
-#                     'Pass %': round(pass_percentage, 2),
-#                     'Fail Count': mismatches,
-#                     'Total Rows': total
-#                 }
-#             else:
-#                 global_percentages[col] = {
-#                     'Pass %': 100.0,
-#                     'Fail Count': 0,
-#                     'Total Rows': 0
-#                 }
-
-#         all_summaries['Global Percentages'] = global_percentages
-
-#         if missing_in_source2 and include_missing_files:
-#             all_summaries["Missing in Source2"] = list(missing_in_source2)
-#         if missing_in_source1 and include_extra_files:
-#             all_summaries["Extra in Source2"] = list(missing_in_source1)
-
-#         final_diff_df = pd.concat(all_diffs) if all_diffs else pd.DataFrame()
-#         return final_diff_df, all_summaries
-
-#     except Exception as e:
-#         logging.error(f"Critical error in compare_all_csvs: {e}")
-#         raise
-
-import os
-import sys
-import re
-import html
-import gc
-import logging
-from datetime import datetime
-from functools import lru_cache
-from multiprocessing import Pool, Manager, Lock
-from threading import Lock as ThreadLock, Thread
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import time
-
-import boto3
-import pandas as pd
-import numpy as np
-import configparser
-import zipfile
-import io
-from tqdm import tqdm
-from tqdm.contrib.concurrent import thread_map
-from jinja2 import Template
-
-# Existing setup, logging, configuration, and utility functions remain unchanged
-# Assuming all imports and configurations are as provided in the original code
-
-# ... [Previous code for logging, configuration, utility functions, S3/file handling, and comparison functions remains unchanged]
-import os
-import sys
-import re
-import html
-import gc
-import logging
-from datetime import datetime
-from functools import lru_cache
-from multiprocessing import Pool, Manager, Lock
-from threading import Lock as ThreadLock
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import time
-import psutil  # Added for resource monitoring
-
-import boto3
-import pandas as pd
-import numpy as np
-import configparser
-import zipfile
-import io
-from tqdm import tqdm
-from tqdm.contrib.concurrent import thread_map
-from jinja2 import Template
-
-# Existing setup, logging, configuration, and utility functions remain unchanged
-# ... [Assume all previous configurations, utility functions, S3/file handling, and comparison functions are included]
-
-def log_resource_usage():
-    """Log CPU and memory usage for the current process."""
-    process = psutil.Process()
-    cpu_percent = psutil.cpu_percent(interval=0.1)
-    memory_info = process.memory_info()
-    logging.info(f"Resource Usage: CPU {cpu_percent}% | Memory {memory_info.rss / 1024**2:.2f} MB | PID {os.getpid()}")
-
-def process_chunk(chunk_id, chunk_csvs, source1_csv_map, source2_csv_map, progress_dict, max_workers):
-    """Process a single chunk of CSVs in parallel using a dedicated Pool."""
+def process_chunk(chunk_id, chunk_csvs, source1_csv_map, source2_csv_map, progress_dict, max_workers, num_chunks):
     pid = os.getpid()
     chunk_start_time = datetime.now()
     logging.info(f"Chunk {chunk_id + 1} started | PID {pid} | CSVs {len(chunk_csvs)} | Start Time {chunk_start_time}")
     log_resource_usage()
 
     process_args = [
-        (csv_name, source1_csv_map, source2_csv_map, progress_dict, chunk_id)
+        (csv_name, source1_csv_map, source2_csv_map, progress_dict, chunk_id, num_chunks)
         for csv_name in chunk_csvs
     ]
     results = []
     with Pool(processes=max_workers) as pool:
-        results = list(tqdm(
-            pool.imap_unordered(process_csv_pair, process_args),
+        with tqdm(
             total=len(chunk_csvs),
             desc=f"Chunk {chunk_id + 1}",
             unit="csv",
@@ -768,7 +527,11 @@ def process_chunk(chunk_id, chunk_csvs, source1_csv_map, source2_csv_map, progre
             file=sys.stdout,
             dynamic_ncols=True,
             leave=True
-        ))
+        ) as pbar:
+            for result in pool.imap_unordered(process_csv_pair, process_args):
+                results.append(result)
+                with tqdm_lock:
+                    pbar.update(1)
 
     chunk_end_time = datetime.now()
     duration = (chunk_end_time - chunk_start_time).total_seconds()
@@ -780,37 +543,21 @@ def process_chunk(chunk_id, chunk_csvs, source1_csv_map, source2_csv_map, progre
     gc.collect()
     return results
 
-def estimate_csv_size(zip_key, csv_name, download_local):
-    """Estimate the size of a CSV file in a ZIP archive."""
-    try:
-        if download_local:
-            with zipfile.ZipFile(zip_key, 'r') as z:
-                return z.getinfo(csv_name).file_size
-        else:
-            zip_obj = s3.get_object(Bucket=bucket_name, Key=zip_key)
-            zip_data = zipfile.ZipFile(io.BytesIO(zip_obj['Body'].read()))
-            return zip_data.getinfo(csv_name).file_size
-    except Exception as e:
-        logging.warning(f"Could not estimate size for {csv_name} in {zip_key}: {e}")
-        return 0
-
 def compare_all_csvs(source1_zip_to_csvs, source2_zip_to_csvs, use_multithreading=True, chunk_size=None):
     if not source1_zip_to_csvs or not source2_zip_to_csvs:
         logging.error("One or both ZIP-to-CSV mappings are empty")
         return pd.DataFrame(), {'Status': 'ERROR', 'Note': 'No CSVs available for comparison'}
 
-    source1_csv_map = {}
-    source2_csv_map = {}
-    
-    for zip_key, csvs in source1_zip_to_csvs.items():
-        for csv_name in csvs:
-            normalized_name = normalize_filename(csv_name)
-            source1_csv_map[normalized_name] = (zip_key, csv_name)
-    
-    for zip_key, csvs in source2_zip_to_csvs.items():
-        for csv_name in csvs:
-            normalized_name = normalize_filename(csv_name)
-            source2_csv_map[normalized_name] = (zip_key, csv_name)
+    source1_csv_map = {
+        normalize_filename(csv_name): (zip_key, csv_name)
+        for zip_key, csvs in source1_zip_to_csvs.items()
+        for csv_name in csvs
+    }
+    source2_csv_map = {
+        normalize_filename(csv_name): (zip_key, csv_name)
+        for zip_key, csvs in source2_zip_to_csvs.items()
+        for csv_name in csvs
+    }
 
     common_csvs = list(set(source1_csv_map) & set(source2_csv_map))
     missing_in_source2 = set(source1_csv_map) - set(source2_csv_map)
@@ -829,43 +576,33 @@ def compare_all_csvs(source1_zip_to_csvs, source2_zip_to_csvs, use_multithreadin
     all_summaries = {}
     global_metrics = {col: {'Matches': 0, 'Mismatches': 0, 'Total': 0} for col in global_percentage}
 
-    # Calculate number of chunks and processes
     effective_processes = min(num_processes, len(common_csvs), os.cpu_count() or 4)
-    chunk_size = chunk_size or max(1, len(common_csvs) // effective_processes)
-    num_chunks = max(1, (len(common_csvs) + chunk_size - 1) // chunk_size)
-    
-    # Balance chunks by estimated CSV size
-    csv_sizes = [
-        (csv, estimate_csv_size(zip_key, csv_name, download_local))
-        for csv, (zip_key, csv_name) in source1_csv_map.items()
-        if csv in common_csvs
-    ]
-    csv_sizes.sort(key=lambda x: x[1], reverse=True)
-    chunks = [[] for _ in range(num_chunks)]
-    chunk_sizes = [0] * num_chunks
-    for csv, size in csv_sizes:
-        min_chunk = chunk_sizes.index(min(chunk_sizes))
-        chunks[min_chunk].append(csv)
-        chunk_sizes[min_chunk] += size
+    num_chunks_used = min(num_chunks, len(common_csvs))
+    logging.info(f"Using {num_chunks_used} chunks for {len(common_csvs)} CSVs")
 
-    # Filter out empty chunks
+    chunks = [[] for _ in range(num_chunks_used)]
+    for i, csv in enumerate(common_csvs):
+        chunks[i % num_chunks_used].append(csv)
+
     chunks = [chunk for chunk in chunks if chunk]
-    num_chunks = len(chunks)
-    workers_per_chunk = max(1, effective_processes // num_chunks) if num_chunks > 0 else 1
+    num_chunks_used = len(chunks)
+    workers_per_chunk = max(1, effective_processes // num_chunks_used) if num_chunks_used > 0 else 1
 
-    logging.info(f"Comparison Setup | Chunks {num_chunks} | Processes {effective_processes} | Workers/Chunk {workers_per_chunk} | CSVs {len(common_csvs)}")
+    for i, chunk in enumerate(chunks):
+        logging.info(f"Chunk {i + 1}: {len(chunk)} CSVs - {chunk}")
+
+    logging.info(f"Comparison Setup | Chunks {num_chunks_used} | Processes {effective_processes} | "
+                 f"Workers/Chunk {workers_per_chunk} | CSVs {len(common_csvs)}")
     log_resource_usage()
 
-    # Initialize manager for shared progress tracking
     manager = Manager()
     progress_dict = manager.dict()
-    for i in range(num_chunks):
+    for i in range(num_chunks_used):
         progress_dict[i] = manager.dict(completed=0, total=len(chunks[i]), total_time=0.0, lock=manager.Lock())
 
     try:
         if use_multithreading:
-            # Process chunks in parallel using ProcessPoolExecutor
-            with ProcessPoolExecutor(max_workers=num_chunks) as executor:
+            with ProcessPoolExecutor(max_workers=num_chunks_used) as executor:
                 futures = [
                     executor.submit(
                         process_chunk,
@@ -874,7 +611,8 @@ def compare_all_csvs(source1_zip_to_csvs, source2_zip_to_csvs, use_multithreadin
                         source1_csv_map,
                         source2_csv_map,
                         progress_dict,
-                        workers_per_chunk
+                        workers_per_chunk,
+                        num_chunks_used
                     )
                     for chunk_id, chunk_csvs in enumerate(chunks)
                 ]
@@ -894,14 +632,14 @@ def compare_all_csvs(source1_zip_to_csvs, source2_zip_to_csvs, use_multithreadin
                     source1_csv_map,
                     source2_csv_map,
                     progress_dict,
-                    workers_per_chunk
+                    workers_per_chunk,
+                    num_chunks_used
                 )
                 all_results.extend(results)
 
         logging.info(f"All chunks completed | End Time {datetime.now()}")
         log_resource_usage()
 
-        # Process results
         for csv_name, diff_df, summary, chunk_id in all_results:
             if diff_df.empty:
                 summary['Note'] = '✅ No differences'
@@ -920,7 +658,6 @@ def compare_all_csvs(source1_zip_to_csvs, source2_zip_to_csvs, use_multithreadin
             del diff_df, summary
             gc.collect()
 
-        # Calculate global percentages
         global_percentages = {}
         for col in global_percentage:
             total = global_metrics[col]['Total']
@@ -959,21 +696,17 @@ Report Generation Functions
 -------------------------------------------------------------'''
 @lru_cache(maxsize=1000)
 def format_value(val):
-    if pd.isna(val) or val is None or val == np.nan:
+    if pd.isna(val) or val is None:
         return ""
     if isinstance(val, (int, float)):
-        if float(val).is_integer():
-            return str(int(val))
-        return "{:.4f}".format(val).rstrip('0').rstrip('.')
+        return str(int(val)) if float(val).is_integer() else "{:.4f}".format(val).rstrip('0').rstrip('.')
     return str(val)
 
 def calculate_diff(val1, val2):
     try:
         num1, num2 = np.array([val1, val2], dtype=np.float64)
         diff = num1 - num2
-        if np.abs(diff) < 1e-10:
-            return "0"
-        return "{:.4f}".format(diff).rstrip('0').rstrip('.')
+        return "0" if np.abs(diff) < 1e-10 else "{:.4f}".format(diff).rstrip('0').rstrip('.')
     except (ValueError, TypeError):
         return "N/A"
 
@@ -987,7 +720,7 @@ def process_file(args, include_passed=True):
 
     row_discrepancies = file_summary.get('Number of Row Discrepancies', 0)
     engine_rows = file_summary.get('Total Rows in Engine', 0)
-    neoprice_rows = file_summary.get('Total Rows in Neoprice', 0)
+    neoprice_rows = file_summary.get('Total Rowsstrained', 0)
     fields = file_summary.get('Total Fields Compared', 0)
     duplicates = file_summary.get('Duplicate Rows in Engine', 0) + file_summary.get('Duplicate Rows in Neoprice', 0)
     missing_rows = file_summary.get('Missing Rows in Neoprice', 0)
@@ -1079,13 +812,13 @@ def generate_html_report(
     time_taken = report_end_time - report_start_time
     time_taken_str = str(time_taken).split('.')[0]
 
-    file_diff_dfs = dict(tuple(diff_df.groupby('File')))
+    file_diff_dfs = dict(tuple(diff_df.groupby('File'))) if not diff_df.empty else {}
     file_diff_dfs = {
         csv_file: df for csv_file, df in file_diff_dfs.items()
         if csv_file not in ["Missing in Source2", "Extra in Source2"]
     }
 
-    metrics_lock = Lock()
+    metrics_lock = ThreadLock()
     total_row_discrepancies = total_engine_rows = total_neoprice_rows = 0
     total_fields_compared = total_duplicates = total_missing_rows = total_extra_rows = 0
 
@@ -1138,19 +871,16 @@ def generate_html_report(
     )
 
     global_percentages = summary.get('Global Percentages', {})
-    global_metrics = []
-    for col, metrics in global_percentages.items():
-        pass_percentage = metrics['Pass %']
-        fail_count = metrics['Fail Count']
-        total_rows = metrics['Total Rows']
-        metric_class = "pass-metric" if pass_percentage >= 99.99 else "fail-metric" if pass_percentage < 90 else "warn-metric"
-        global_metrics.append({
+    global_metrics = [
+        {
             'column': html.escape(col),
-            'pass_percentage': pass_percentage,
-            'fail_count': fail_count,
-            'total_rows': total_rows,
-            'metric_class': metric_class
-        })
+            'pass_percentage': metrics['Pass %'],
+            'fail_count': metrics['Fail Count'],
+            'total_rows': metrics['Total Rows'],
+            'metric_class': "pass-metric" if metrics['Pass %'] >= 99.99 else "fail-metric" if metrics['Pass %'] < 90 else "warn-metric"
+        }
+        for col, metrics in global_percentages.items()
+    ]
 
     missing_files = summary.get("Missing in Source2", []) if include_missing_files else []
     extra_files = summary.get("Extra in Source2", []) if include_extra_files else []
@@ -1165,7 +895,7 @@ def generate_html_report(
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
     <style>
         body { font-family: Arial, sans-serif; background: #f4f4f9; margin: 0; padding: 0; }
-        .container { background: white; margin: 10px auto; padding: 10px; max-width: 98%; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .container { background: white; margin: 10px auto; padding: 10px; max-width: 98%; borderędzi: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         header { background-color: #173E72; color: white; padding: 5px; text-align: center; }
         table { width: 100%; border-collapse: collapse; margin-top: 15px; word-break: break-word; table-layout: fixed; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
@@ -1479,7 +1209,7 @@ def run_comparison(download_local=True):
         diff_df, summary = compare_all_csvs(
             source1_zip_to_csvs,
             source2_zip_to_csvs,
-            use_multithreading_comparision,
+            use_multithreading_comparison,
             chunk_size=None
         )
         list_files = [
@@ -1528,3 +1258,9 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Error in main execution: {e}")
         raise
+
+
+num_processes = 32
+comparison_batch_size = 100
+num_chunks = 3
+show_row_progress = True
