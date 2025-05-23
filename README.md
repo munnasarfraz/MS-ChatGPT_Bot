@@ -1,6 +1,3 @@
-Here's the corrected and properly formatted GitHub README.md content that will display correctly on GitHub:
-
-```markdown
 # Database Refresh Copy Script 📜
 
 This Python script (`db_refresh_copy.py`) automates the process of copying database dumps between AWS EC2 instances using AWS Systems Manager (SSM) and Amazon S3. It supports multi-threaded execution, file compression, splitting large files, and service management (start/stop) on source and destination instances.
@@ -35,6 +32,8 @@ The `db_refresh_copy.py` script is designed to facilitate the transfer of databa
 - **Python 3.8+** 🐍
 - **AWS CLI** configured with appropriate profiles and SSO authentication
 - **Required Python libraries**:
+  ```bash
+  pip install boto3 pathlib
   ```bash
   pip install boto3 pathlib
   ```
