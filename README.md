@@ -1,164 +1,289 @@
-Great catch! Here's your **updated full README**, now instructing users to install dependencies via `requirements.txt` instead of listing the packages individually.
+Database Refresh Copy Script 📜
+This Python script (db_refresh_copy.py) automates the process of copying database dumps between AWS EC2 instances using AWS Systems Manager (SSM) and Amazon S3. It supports multi-threaded execution, file compression, splitting large files, and service management (start/stop) on source and destination instances.
 
-You can copy-paste the following into your `README.md`:
+📋 Table of Contents
 
----
+Overview
+Features
+Prerequisites
+Installation
+Usage
+Input File Format
+Output File Format
+How It Works
+Logging
+Error Handling
+Contributing
+License
 
-```markdown
-# 📊 CSV Comparison Tool
 
-## 🚀 Overview
-This tool is designed to compare two sets of CSV files stored in AWS S3 buckets. It:
+📖 Overview
+The db_refresh_copy.py script is designed to facilitate the transfer of database dumps between AWS EC2 instances. It uses AWS SSM to execute commands on instances, compresses and optionally splits database dumps, uploads them to an S3 bucket, and downloads/extracts them on destination instances. The script supports dry-run mode for testing and multi-threaded processing for efficiency.
 
-- Reads `.zip` files directly from two different S3 prefixes into memory  
-- Extracts and loads CSVs inside the zip files without saving them locally  
-- Compares CSV files based on defined primary key columns and selected fields  
-- Generates a clean, human-readable HTML report with discrepancies, stats, and insights
+✨ Features
 
-Use this tool for validating data pipelines, comparing environments, or spotting data drift over time.
+Multi-threaded Execution 🚀: Processes multiple destination instances concurrently to reduce execution time.
+File Compression and Splitting 🗜️: Compresses database dumps and splits large files (>5GB) into smaller parts for efficient transfer.
+Service Management ⚙️: Stops and starts services (e.g., Journey Engine, Routings Engine) on source and destination instances using SSM.
+Dry-run Mode 🔍: Simulates the process without making changes for testing purposes.
+Disk Space Validation 💾: Checks available disk space before processing to prevent failures.
+Size Verification ✅: Compares source and destination file sizes to ensure data integrity.
+Error Handling 🛑: Robust error handling for AWS SSO, SSM, and S3 operations.
 
----
 
-## 🛠️ Prerequisites
+🛠️ Prerequisites
 
-Make sure Python 3.6+ is installed.
-
-Install dependencies using `requirements.txt`:
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## ⚙️ Configuration
-
-Create a `config.ini` file in the root directory.
-
-### Example: `config.ini`
-
-```ini
-[settings]
-project_name = CSV Comparator
-project_logo = path/to/logo.png
-
-[report]
-output_dir = ./reports
-output_file = comparison_report.html
-
-[keys]
-primary_key_columns = id,serial_number
-columns = name,price,quantity
-
-[aws]
-bucket_name = your-bucket-name
-source_1_prefix = source1/
-source_2_prefix = source2/
-
-[threading]
-use_multithreading_reading = true
-use_multithreading_comparision = true
-
-[report_custom]
-include_passed = true
-include_missing_files = true
-```
-
-### 🔍 Explanation of Config Fields
-
-- `primary_key_columns`: Comma-separated keys used to match rows between files
-- `columns`: Specific columns to compare (optional). Leave blank to compare all
-- `bucket_name`: Name of your S3 bucket
-- `source_1_prefix` / `source_2_prefix`: Folder paths inside the bucket
-- `use_multithreading_reading`: Load files in parallel (True/False)
-- `use_multithreading_comparision`: Speed up comparison (True/False)
-- `include_passed`: Show passing rows in the report
-- `include_missing_files`: Highlight missing CSVs between sources
-
----
-
-## ▶️ How to Run
-
-Run the comparison using:
-
-```bash
-python run.py
-```
-
-The script will:
-
-1. Read `.zip` files directly from S3 (no local downloads)
-2. Extract CSVs and load them into memory
-3. Normalize filenames by stripping timestamps
-4. Compare matched files by key columns and selected fields
-5. Generate an HTML report in your configured output directory
-
----
-
-## 📂 Output
-
-- A timestamped HTML report (e.g., `comparison_report_20250415_1530.html`)
-- Includes:
-  - Total files compared
-  - Pass/fail percentages
-  - Field-level mismatches
-  - Missing/extra rows or columns
-  - Missing files between S3 folders
-
----
-
-## ✅ Example Console Output
-
-```
----------------- CSV Comparison Started ----------------
-Reading zip files from source1...
-Reading zip files from source2...
-Comparing 3 matched CSV files...
-Generating report...
-Report saved to ./reports/comparison_report_20250415_1530.html
----------------- CSV Comparison Finished ----------------
-```
-
----
-
-## 🧩 Troubleshooting
-
-- **S3 Access Issues**: Make sure AWS credentials are properly configured (e.g., using `aws configure` or environment variables)
-- **Missing Files**: Ensure both S3 prefixes contain comparable zip files
-- **Primary Key Errors**: Double-check `primary_key_columns` — empty or incorrect keys can cause mismatches
-
----
-
-## 🧱 Project Structure
-
-```
-project/
-│
-├── run.py              # Main script to execute comparison
-├── config.ini          # Your configuration file
-├── requirements.txt    # Python dependencies
-├── csv_comparision.py  # Python source code
-├── /reports            # Folder where reports will be saved
-└── README.md           # You're here!
-```
-
----
-
-## 📄 License
-
-This tool is provided as-is for internal or personal use. Feel free to fork, extend, or modify it as needed.
-```
-
----
-
-If you need the contents of `requirements.txt` to go with this, here's a simple version you can add:
-
-### ✅ `requirements.txt`
-
-```
+Python 3.8+ 🐍
+AWS CLI configured with appropriate profiles and SSO authentication.
+Required Python libraries:
 boto3
-pandas
-tqdm
-```
+pathlib
+Install dependencies using:pip install boto3
 
-Let me know if you’d like to include `configparser` or anything else in it!
+
+
+
+AWS Permissions 🔑:
+Access to AWS SSM (AWS-RunShellScript document).
+Read/write permissions for the specified S3 bucket.
+Permissions to manage EC2 instances and services.
+
+
+Tools on EC2 Instances:
+tar and pigz for compression.
+aws CLI installed for S3 operations.
+
+
+Input File: A JSON file (event.json) specifying services, instances, and paths.
+
+
+⚙️ Installation
+
+Clone the repository:git clone https://github.com/your-repo/db-refresh-copy.git
+cd db-refresh-copy
+
+
+Install required Python packages:pip install -r requirements.txt
+
+
+Ensure the AWS CLI is configured with the necessary profiles:aws configure
+
+
+Place the input event.json file in the event directory.
+
+
+🚀 Usage
+
+Prepare the input event.json file in the event directory (see Input File Format).
+Run the script:python db_refresh_copy.py
+
+
+The script processes the input, performs the database copy, and generates an output file in the output directory (e.g., db_copy_output_YYYYMMDD_HHMMSS.json).
+
+Dry-run Mode:To simulate the process without making changes, set "dryRun": true in the event.json file.
+
+📥 Input File Format
+The script expects an input JSON file (event.json) with the following structure:
+{
+    "services": [
+        {
+            "enabled": true,
+            "name": "Routings Engine",
+            "source": {
+                "environment": "engu",
+                "instanceId": "i-0b1b77f5c6948d082",
+                "path": "/opt/atpco/engine/db/neo4j/chgdetroutings/Routings"
+            },
+            "destinations": [
+                {
+                    "environment": "ppj",
+                    "instanceId": "i-057d31b7dfd13887d",
+                    "path": "/opt/atpco/engine/db/neo4j/chgdetroutings/Routings"
+                },
+                {
+                    "environment": "ppj",
+                    "instanceId": "i-0591295a1783a221a",
+                    "path": "/opt/atpco/engine/db/neo4j/chgdetroutings/Routings/"
+                }
+            ]
+        }
+    ],
+    "s3Bucket": "ppj-transfer-bucket",
+    "dryRun": true
+}
+
+
+services: List of services to process.
+enabled: Boolean to enable/disable processing of the service.
+name: Service name (e.g., "Routings Engine").
+source: Source instance details (environment, instance ID, path).
+destinations: List of destination instances (environment, instance ID, path).
+
+
+s3Bucket: S3 bucket for temporary storage.
+dryRun: Boolean to enable dry-run mode.
+
+
+📤 Output File Format
+The script generates a JSON output file in the output directory (e.g., db_copy_output_YYYYMMDD_HHMMSS.json) with the following structure:
+Dry-run Mode
+{
+  "status": "done",
+  "results": [
+    {
+      "name": "Routings Engine",
+      "status": "Success",
+      "upload_result": {
+        "status": "Success",
+        "service": "Routings Engine",
+        "message": "Dry-run: Upload skipped"
+      },
+      "download_results": [
+        {
+          "environment": "ppj",
+          "instanceId": "i-057d31b7dfd13887d",
+          "path": "/opt/atpco/engine/db/neo4j/chgdetroutings/Routings",
+          "status": "Success",
+          "service": "Routings Engine",
+          "message": "Dry-run: Download skipped"
+        },
+        {
+          "environment": "ppj",
+          "instanceId": "i-0591295a1783a221a",
+          "path": "/opt/atpco/engine/db/neo4j/chgdetroutings/Routings/",
+          "status": "Success",
+          "service": "Routings Engine",
+          "message": "Dry-run: Download skipped"
+        }
+      ],
+      "message": "All destinations completed"
+    }
+  ]
+}
+
+Normal Execution
+{
+  "status": "done",
+  "results": [
+    {
+      "name": "Routings Engine",
+      "status": "Success",
+      "upload_result": {
+        "status": "Success",
+        "service": "Routings Engine",
+        "message": "Upload completed",
+        "duration_seconds": 271.87160444259644
+      },
+      "download_results": [
+        {
+          "environment": "ppj",
+          "instanceId": "i-057d31b7dfd13887d",
+          "path": "/opt/atpco/engine/db/neo4j/chgdetroutings/Routings",
+          "status": "Success",
+          "service": "Routings Engine",
+          "message": "Download and extraction completed for Routings Engine",
+          "details": [
+            "Download and extraction completed successfully"
+          ],
+          "duration_seconds": 209.64332580566406
+        },
+        {
+          "environment": "ppj",
+          "instanceId": "i-0591295a1783a221a",
+          "path": "/opt/atpco/engine/db/neo4j/chgdetroutings/Routings/",
+          "status": "Success",
+          "service": "Routings Engine",
+          "message": "Download and extraction completed for Routings Engine",
+          "details": [
+            "Download and extraction completed successfully"
+          ],
+          "duration_seconds": 267.83109521865845
+        }
+      ],
+      "message": "All destinations completed"
+    }
+  ]
+}
+
+
+status: Overall execution status ("done").
+results: List of service results, including:
+name: Service name.
+status: Success or Error.
+upload_result: Details of the upload process (status, message, duration).
+download_results: List of download results for each destination instance.
+message: Summary message.
+
+
+
+
+🔄 How It Works
+
+Initialization:
+Loads the input event.json file.
+Configures logging and AWS sessions.
+
+
+Service Processing:
+Iterates through enabled services in the input file.
+For each service:
+Source Instance:
+Stops the service using SSM.
+Checks available disk space.
+Compresses the database dump (splits if >5GB).
+Uploads the compressed file(s) to S3.
+Restarts the service.
+
+
+Destination Instances:
+Stops the service.
+Downloads and extracts the file(s) from S3.
+Restarts the service.
+Verifies file sizes to ensure data integrity.
+
+
+
+
+
+
+Output:
+Generates a JSON output file with execution details.
+Logs all actions and errors.
+
+
+
+
+📜 Logging
+
+The script uses Python's logging module with INFO level by default.
+Logs include:
+Start/end of script execution 📜.
+Service processing status 🔄.
+Upload/download progress 📤📥.
+Errors and warnings ❌⚠️.
+
+
+Logs are prefixed with emojis for clarity (e.g., ✅ for success, ❌ for errors).
+
+
+🚨 Error Handling
+
+AWS SSO Errors: Prompts to run aws sso login --profile env if the SSO session expires.
+Disk Space Issues: Checks available disk space and logs the required cleanup size if insufficient.
+SSM Command Failures: Captures and logs SSM command errors.
+S3 Upload/Download Failures: Logs specific errors and marks the service status as "Error".
+General Exceptions: Logs full stack traces for debugging.
+
+
+🤝 Contributing
+Contributions are welcome! Please follow these steps:
+
+Fork the repository.
+Create a feature branch (git checkout -b feature/YourFeature).
+Commit your changes (git commit -m 'Add YourFeature').
+Push to the branch (git push origin feature/YourFeature).
+Open a pull request.
+
+
+📄 License
+This project is licensed under the MIT License. See the LICENSE file for details.
