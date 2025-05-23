@@ -1,4 +1,4 @@
-Here's the correct GitHub README.md format that you can copy and paste:
+Here's the corrected and properly formatted GitHub README.md content that will display correctly on GitHub:
 
 ```markdown
 # Database Refresh Copy Script 📜
@@ -6,39 +6,39 @@ Here's the correct GitHub README.md format that you can copy and paste:
 This Python script (`db_refresh_copy.py`) automates the process of copying database dumps between AWS EC2 instances using AWS Systems Manager (SSM) and Amazon S3. It supports multi-threaded execution, file compression, splitting large files, and service management (start/stop) on source and destination instances.
 
 ## 📋 Table of Contents
-- [Overview](#-overview)
-- [Features](#-features)
-- [Prerequisites](#-prerequisites)
-- [Installation](#-installation)
-- [Usage](#-usage)
-- [Input File Format](#-input-file-format)
-- [Output File Format](#-output-file-format)
-- [How It Works](#-how-it-works)
-- [Logging](#-logging)
-- [Error Handling](#-error-handling)
-- [Contributing](#-contributing)
-- [License](#-license)
+- [Overview](#overview)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Input File Format](#input-file-format)
+- [Output File Format](#output-file-format)
+- [How It Works](#how-it-works)
+- [Logging](#logging)
+- [Error Handling](#error-handling)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## 📖 Overview
 The `db_refresh_copy.py` script is designed to facilitate the transfer of database dumps between AWS EC2 instances. It uses AWS SSM to execute commands on instances, compresses and optionally splits database dumps, uploads them to an S3 bucket, and downloads/extracts them on destination instances. The script supports dry-run mode for testing and multi-threaded processing for efficiency.
 
 ## ✨ Features
-- **Multi-threaded Execution 🚀**: Processes multiple destination instances concurrently to reduce execution time.
-- **File Compression and Splitting 🗜️**: Compresses database dumps and splits large files (>5GB) into smaller parts for efficient transfer.
-- **Service Management ⚙️**: Stops and starts services (e.g., Journey Engine, Routings Engine) on source and destination instances using SSM.
-- **Dry-run Mode 🔍**: Simulates the process without making changes for testing purposes.
-- **Disk Space Validation 💾**: Checks available disk space before processing to prevent failures.
-- **Size Verification ✅**: Compares source and destination file sizes to ensure data integrity.
-- **Error Handling 🛑**: Robust error handling for AWS SSO, SSM, and S3 operations.
+- **Multi-threaded Execution** 🚀: Processes multiple destination instances concurrently to reduce execution time
+- **File Compression and Splitting** 🗜️: Compresses database dumps and splits large files (>5GB) into smaller parts for efficient transfer
+- **Service Management** ⚙️: Stops and starts services on source and destination instances using SSM
+- **Dry-run Mode** 🔍: Simulates the process without making changes for testing purposes
+- **Disk Space Validation** 💾: Checks available disk space before processing to prevent failures
+- **Size Verification** ✅: Compares source and destination file sizes to ensure data integrity
+- **Error Handling** 🛑: Robust error handling for AWS SSO, SSM, and S3 operations
 
 ## 🛠️ Prerequisites
-- **Python 3.8+ 🐍**
-- **AWS CLI** configured with appropriate profiles and SSO authentication.
+- **Python 3.8+** 🐍
+- **AWS CLI** configured with appropriate profiles and SSO authentication
 - **Required Python libraries**:
   ```bash
   pip install boto3 pathlib
   ```
-- **AWS Permissions 🔑**:
+- **AWS Permissions** 🔑:
   - Access to AWS SSM (`AWS-RunShellScript` document)
   - Read/write permissions for the specified S3 bucket
   - Permissions to manage EC2 instances and services
@@ -57,25 +57,23 @@ The `db_refresh_copy.py` script is designed to facilitate the transfer of databa
    ```bash
    pip install -r requirements.txt
    ```
-3. Ensure the AWS CLI is configured with the necessary profiles:
+3. Configure AWS CLI:
    ```bash
    aws configure
    ```
-4. Place the input `event.json` file in the `event` directory.
+4. Place the input `event.json` file in the `event` directory
 
 ## 🚀 Usage
-1. Prepare the input `event.json` file in the `event` directory (see [Input File Format](#-input-file-format))
+1. Prepare the `event.json` file (see [Input File Format](#input-file-format))
 2. Run the script:
    ```bash
    python db_refresh_copy.py
    ```
-3. The script processes the input, performs the database copy, and generates an output file in the `output` directory (e.g., `db_copy_output_YYYYMMDD_HHMMSS.json`).
+3. The script will generate an output file in the `output` directory
 
-**Dry-run Mode**: To simulate the process without making changes, set `"dryRun": true` in the `event.json` file.
+**Dry-run Mode**: Set `"dryRun": true` in `event.json` to simulate without changes
 
 ## 📥 Input File Format
-The script expects an input JSON file (`event.json`) with the following structure:
-
 ```json
 {
     "services": [
@@ -92,11 +90,6 @@ The script expects an input JSON file (`event.json`) with the following structur
                     "environment": "ppj",
                     "instanceId": "i-057d31b7dfd13887d",
                     "path": "/opt/atpco/engine/db/neo4j/chgdetroutings/Routings"
-                },
-                {
-                    "environment": "ppj",
-                    "instanceId": "i-0591295a1783a221a",
-                    "path": "/opt/atpco/engine/db/neo4j/chgdetroutings/Routings/"
                 }
             ]
         }
@@ -105,6 +98,7 @@ The script expects an input JSON file (`event.json`) with the following structur
     "dryRun": true
 }
 ```
+
 
 - **services**: List of services to process
   - `enabled`: Boolean to enable/disable processing of the service
