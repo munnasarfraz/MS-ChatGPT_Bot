@@ -34,8 +34,6 @@ The `db_refresh_copy.py` script is designed to facilitate the transfer of databa
 - **Required Python libraries**:
   ```bash
   pip install boto3 pathlib
-  ```bash
-  pip install boto3 pathlib
   ```
 - **AWS Permissions** 🔑:
   - Access to AWS SSM (`AWS-RunShellScript` document)
