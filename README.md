@@ -61,7 +61,7 @@ The `db_refresh_copy.py` script is designed to facilitate the transfer of databa
 4. Place the input `event.json` file in the `event` directory
 
 ## 🚀 Usage
-1. Prepare the `event.json` file (see [Input File Format](#input-file-format))
+1. Prepare the `event.json` file 
 2. Run the script:
    ```bash
    python db_refresh_copy.py
