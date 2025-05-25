@@ -239,25 +239,38 @@ The script generates a JSON output file in the `output` directory (e.g., `db_cop
 - **S3 Upload/Download Failures**: Logs specific errors and marks the service status as "Error"
 - **General Exceptions**: Logs full stack traces for debugging
 
-## 🤝 Contributing
-Contributions are welcome! Please follow these steps:
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/YourFeature`)
-3. Commit your changes (`git commit -m 'Add YourFeature'`)
-4. Push to the branch (`git push origin feature/YourFeature`)
-5. Open a pull request
 
-## 📄 License
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## 📄 S3-Bucket Policy
+**S3 policy**
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::985663031727:root"
+            },
+            "Action": [
+                "s3:PutObject",
+                "s3:ListBucket",
+                "s3:GetBucketLocation"
+            ],
+            "Resource": [
+                "arn:aws:s3:::ppj-transfer-bucket",
+                "arn:aws:s3:::ppj-transfer-bucket/*"
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::985663031727:root"
+            },
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::ppj-transfer-bucket/*"
+        }
+    ]
+}
 ```
 
-This format includes:
-1. Proper Markdown syntax for GitHub
-2. Consistent emoji usage
-3. Clear section headers with anchor links
-4. Proper code blocks for JSON examples
-5. Organized structure matching your content
-6. Correct bullet point formatting
-7. Proper escaping of special characters
-
-You can copy this entire text and paste it directly into your README.md file in your GitHub repository.
