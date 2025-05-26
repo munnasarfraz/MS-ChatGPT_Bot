@@ -37,6 +37,7 @@ Run the following command **for each environment profile** listed under `source.
 
 ```bash
 aws sso login --profile <env>
+```
 
 - **Python 3.8+** 🐍
 - **AWS CLI** configured with appropriate profiles and SSO authentication
