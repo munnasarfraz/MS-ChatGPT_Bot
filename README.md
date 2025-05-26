@@ -47,7 +47,7 @@ The `db_refresh_copy.py` script is designed to facilitate the transfer of databa
 ## ⚙️ Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-repo/db-refresh-copy.git
+   git clone https://vcsmgt.atpco.org/Engines/db_refresh.git
    cd db-refresh-copy
    ```
 2. Install required Python packages:
