@@ -31,9 +31,8 @@ The `db_refresh_copy.py` script is designed to facilitate the transfer of databa
 ## 🛠️ Prerequisites
 ### 🔐 AWS SSO Login Requirement
 
-Before running the automation, make sure all AWS environment profiles mentioned in the `event.json` file are authenticated using **AWS SSO**.
-
-Run the following command **for each environment profile** listed under `source.environment` and `destinations[].environment`:
+- Before running the automation, make sure all AWS environment profiles mentioned in the `event.json` file are authenticated using **AWS SSO**.
+- Run the following command **for each environment profile** listed under `source.environment` and `destinations[].environment`:
 
 ```bash
 aws sso login --profile <env>
